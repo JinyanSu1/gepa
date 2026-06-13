@@ -176,6 +176,10 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
         }
 
     @staticmethod
+    def _restore_best_outputs(outputs: Any) -> list[tuple[ProgramIdx, RolloutOutput]]:
+        return [(entry[0], entry[1]) for entry in outputs]
+
+    @staticmethod
     def _migrate_from_dict_v0(d: dict[str, Any]) -> "GEPAResult[RolloutOutput, DataId]":
         kwargs = GEPAResult._common_kwargs_from_dict(d)
         kwargs["val_subscores"] = [dict(enumerate(scores)) for scores in d.get("val_subscores", [])]
@@ -186,8 +190,7 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
         best_outputs_valset = d.get("best_outputs_valset")
         if best_outputs_valset is not None:
             kwargs["best_outputs_valset"] = {
-                idx: [(program_idx, output) for program_idx, output in outputs]
-                for idx, outputs in enumerate(best_outputs_valset)
+                idx: GEPAResult._restore_best_outputs(outputs) for idx, outputs in enumerate(best_outputs_valset)
             }
         else:
             kwargs["best_outputs_valset"] = None
@@ -206,7 +209,7 @@ class GEPAResult(Generic[RolloutOutput, DataId]):
         best_outputs_valset = d.get("best_outputs_valset")
         if best_outputs_valset is not None:
             kwargs["best_outputs_valset"] = {
-                val_id: [(program_idx, output) for program_idx, output in outputs]
+                val_id: GEPAResult._restore_best_outputs(outputs)
                 for val_id, outputs in best_outputs_valset.items()
             }
         else:
