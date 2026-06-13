@@ -101,6 +101,38 @@ test fixture, the serialized reflection record drops from 14,254 chars (`full`)
 to 5,018 chars (`hybrid`) or 4,034 chars (`summary`), a 71.7% reduction for the
 default summary mode.
 
+### No-Docker Reflection Benchmark
+
+You can benchmark the distiller without Docker, SWE-smith images, or model API
+calls:
+
+```bash
+python -m gepa.gskill.gskill.trace_benchmark
+```
+
+The built-in replay cases cover four common rollout outcomes:
+`test_failure`, `patch_apply_failed`, `regression`, and `no_patch`. The benchmark
+checks whether `summary` mode preserves the expected failure mode, changed files,
+recent commands, and test-failure terms while measuring serialized reflection
+payload size.
+
+Latest deterministic result:
+
+| Mode | Avg serialized chars | Reduction vs full |
+|------|---------------------:|------------------:|
+| `full` | 12,918 | 0.0% |
+| `hybrid` | 3,662 | 71.9% |
+| `summary` | 2,599 | 80.6% |
+
+`summary` mode preserved 100.0% of the expected debugging signals across the
+four replay cases. To replay your own saved artifacts, write one JSON object per
+line with `instance_id`, `problem`, `patch`, `agent_trace`, `test_output`,
+`status`, `score`, `agent_metrics`, and an `expected` object:
+
+```bash
+python -m gepa.gskill.gskill.trace_benchmark --input traces.jsonl --json
+```
+
 ### Evaluation
 
 After training, evaluate learned skills on the held-out test set.
