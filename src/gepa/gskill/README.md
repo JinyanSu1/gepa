@@ -124,10 +124,15 @@ Latest deterministic result:
 | `hybrid` | 3,662 | 71.9% |
 | `summary` | 2,599 | 80.6% |
 
-`summary` mode preserved 100.0% of the expected debugging signals across the
-four replay cases. To replay your own saved artifacts, write one JSON object per
-line with `instance_id`, `problem`, `patch`, `agent_trace`, `test_output`,
-`status`, `score`, `agent_metrics`, and an `expected` object:
+Using a simple chars/4 token estimate, `summary` mode reduces the average
+reflection input from 3,230 tokens to 650 tokens. At the default
+`--max-metric-calls 600` budget, that projects to roughly 1,547,850 fewer
+reflection input tokens than `full` mode. `summary` mode preserved 100.0% of
+the expected debugging signals across the four replay cases (16/16 checks).
+
+To replay your own saved artifacts, write one JSON object per line with
+`instance_id`, `problem`, `patch`, `agent_trace`, `test_output`, `status`,
+`score`, `agent_metrics`, and an `expected` object:
 
 ```bash
 python -m gepa.gskill.gskill.trace_benchmark --input traces.jsonl --json

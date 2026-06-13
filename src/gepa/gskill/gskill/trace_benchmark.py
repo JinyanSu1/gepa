@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,7 @@ from gepa.gskill.gskill.trace_distillation import (
 )
 
 MODES = ("full", "hybrid", "summary")
+CHARS_PER_TOKEN_ESTIMATE = 4
 
 
 @dataclass(frozen=True)
@@ -47,21 +49,35 @@ class ReplayCase:
 class BenchmarkCaseResult:
     instance_id: str
     sizes: dict[str, int]
+    estimated_tokens: dict[str, int]
     reductions: dict[str, float]
+    token_savings: dict[str, int]
     summary_signal: dict[str, bool]
 
 
 @dataclass(frozen=True)
 class BenchmarkReport:
     num_cases: int
+    projection_records: int
     avg_sizes: dict[str, float]
+    avg_estimated_tokens: dict[str, float]
     avg_reductions: dict[str, float]
+    avg_token_savings: dict[str, float]
+    projected_token_savings: dict[str, float]
+    signal_checks_passed: int
+    signal_checks_total: int
     signal_preservation_rate: float
     cases: list[BenchmarkCaseResult]
+    elapsed_ms: float | None = None
 
 
 def _noise(label: str, count: int) -> str:
     return "\n".join(f"{label} noisy line {i}: {'x' * 72}" for i in range(count))
+
+
+def estimate_tokens(chars: int) -> int:
+    """Approximate model input tokens from serialized chars for budget planning."""
+    return (chars + CHARS_PER_TOKEN_ESTIMATE - 1) // CHARS_PER_TOKEN_ESTIMATE
 
 
 def default_cases() -> list[ReplayCase]:
@@ -258,18 +274,24 @@ def _summary_signal(record: dict[str, Any], expected: dict[str, Any]) -> dict[st
     }
 
 
-def run_benchmark(cases: list[ReplayCase]) -> BenchmarkReport:
+def run_benchmark(cases: list[ReplayCase], *, projection_records: int = 600) -> BenchmarkReport:
+    started = time.perf_counter()
     case_results = []
     for case in cases:
         records = {mode: _build_record(case, mode) for mode in MODES}
         sizes = {mode: estimate_record_chars(record) for mode, record in records.items()}
+        estimated_tokens = {mode: estimate_tokens(sizes[mode]) for mode in MODES}
         full_size = sizes["full"]
+        full_tokens = estimated_tokens["full"]
         reductions = {mode: 0.0 if mode == "full" else 1.0 - (sizes[mode] / full_size) for mode in MODES}
+        token_savings = {mode: full_tokens - estimated_tokens[mode] for mode in MODES}
         case_results.append(
             BenchmarkCaseResult(
                 instance_id=case.instance_id,
                 sizes=sizes,
+                estimated_tokens=estimated_tokens,
                 reductions=reductions,
+                token_savings=token_savings,
                 summary_signal=_summary_signal(records["summary"], case.expected),
             )
         )
@@ -282,17 +304,37 @@ def run_benchmark(cases: list[ReplayCase]) -> BenchmarkReport:
         mode: sum(result.reductions[mode] for result in case_results) / len(case_results)
         for mode in MODES
     }
+    avg_estimated_tokens = {
+        mode: sum(result.estimated_tokens[mode] for result in case_results) / len(case_results)
+        for mode in MODES
+    }
+    avg_token_savings = {
+        mode: sum(result.token_savings[mode] for result in case_results) / len(case_results)
+        for mode in MODES
+    }
+    projected_token_savings = {
+        mode: avg_token_savings[mode] * projection_records
+        for mode in MODES
+    }
     signal_checks = [
         ok
         for result in case_results
         for ok in result.summary_signal.values()
     ]
+    passed_checks = sum(signal_checks)
     return BenchmarkReport(
         num_cases=len(case_results),
+        projection_records=projection_records,
         avg_sizes=avg_sizes,
+        avg_estimated_tokens=avg_estimated_tokens,
         avg_reductions=avg_reductions,
+        avg_token_savings=avg_token_savings,
+        projected_token_savings=projected_token_savings,
+        signal_checks_passed=passed_checks,
+        signal_checks_total=len(signal_checks),
         signal_preservation_rate=sum(signal_checks) / len(signal_checks) if signal_checks else 0.0,
         cases=case_results,
+        elapsed_ms=(time.perf_counter() - started) * 1000,
     )
 
 
@@ -308,7 +350,29 @@ def format_report(report: BenchmarkReport) -> str:
     lines.extend(
         [
             "",
-            f"summary_signal_preservation: {report.signal_preservation_rate:.1%}",
+            f"summary_signal_preservation: {report.signal_preservation_rate:.1%} "
+            f"({report.signal_checks_passed}/{report.signal_checks_total} checks)",
+            "",
+            f"estimated tokens use chars/{CHARS_PER_TOKEN_ESTIMATE}",
+            "mode      avg_tokens   saved_vs_full",
+        ]
+    )
+    for mode in MODES:
+        lines.append(f"{mode:<8} {report.avg_estimated_tokens[mode]:>10.0f}   {report.avg_token_savings[mode]:>13.0f}")
+    lines.extend(
+        [
+            "",
+            f"projected_savings_for_{report.projection_records}_reflection_records:",
+        ]
+    )
+    for mode in MODES:
+        if mode == "full":
+            continue
+        lines.append(f"- {mode}: {report.projected_token_savings[mode]:,.0f} estimated input tokens saved vs full")
+    if report.elapsed_ms is not None:
+        lines.append(f"benchmark_runtime_ms: {report.elapsed_ms:.2f}")
+    lines.extend(
+        [
             "",
             "case details:",
         ]
@@ -325,10 +389,16 @@ def format_report(report: BenchmarkReport) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the offline gskill trace-distillation benchmark.")
     parser.add_argument("--input", type=Path, default=None, help="Optional JSONL replay cases. Uses built-in cases by default.")
+    parser.add_argument(
+        "--projection-records",
+        type=int,
+        default=600,
+        help="Reflection-record count used for projected token savings.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     args = parser.parse_args(argv)
 
-    report = run_benchmark(load_cases(args.input))
+    report = run_benchmark(load_cases(args.input), projection_records=args.projection_records)
     if args.json:
         print(json.dumps(asdict(report), indent=2, sort_keys=True))
     else:

@@ -21,10 +21,15 @@ def test_default_benchmark_reports_payload_reduction_and_signal_preservation():
     assert report.num_cases == 4
     assert report.avg_reductions["summary"] > 0.60
     assert report.avg_reductions["hybrid"] > 0.50
+    assert report.avg_estimated_tokens["summary"] < report.avg_estimated_tokens["full"] * 0.40
+    assert report.projected_token_savings["summary"] > 1_000_000
+    assert report.signal_checks_passed == 16
+    assert report.signal_checks_total == 16
     assert report.signal_preservation_rate == 1.0
 
     rendered = format_report(report)
-    assert "summary_signal_preservation: 100.0%" in rendered
+    assert "summary_signal_preservation: 100.0% (16/16 checks)" in rendered
+    assert "projected_savings_for_600_reflection_records:" in rendered
     assert "math-utils__zero-division" in rendered
 
 
