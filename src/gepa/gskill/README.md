@@ -40,17 +40,23 @@ docker ps
 python -m swesmith.build_repo.download_images
 ```
 
+Validate the harness setup before launching an expensive run:
+
+```bash
+python -m gskill.preflight
+```
+
 ## Using gskill
 
 ### Training
 
 ```bash
 # Smoke test
-python -m gepa.gskill.train_optimize_anything \
+python -m gskill.train_optimize_anything \
   --smoke-test --model "gemini/gemini-2.0-flash-exp"
 
 # Full run
-python -m gepa.gskill.train_optimize_anything \
+python -m gskill.train_optimize_anything \
   --repo pygments__pygments \
   --train-size 200 --val-size 50 --test-size 100 \
   --model gpt-5-mini --reflection-model gpt-5.2-pro \
@@ -58,11 +64,11 @@ python -m gepa.gskill.train_optimize_anything \
   --proposer loop --wandb
 
 # Resume from a previous run
-python -m gepa.gskill.train_optimize_anything \
+python -m gskill.train_optimize_anything \
   --resume gepa_results/logs/run_XXXXXXXX
 
 # Pre/post optimization test comparison
-python -m gepa.gskill.train_optimize_anything \
+python -m gskill.train_optimize_anything \
   --run-testset --repo pygments__pygments --model gpt-5-mini
 ```
 
@@ -85,22 +91,22 @@ After training, evaluate learned skills on the held-out test set.
 
 ```bash
 # Mini-SWE-agent: with skills vs without (runs both conditions)
-python -m src.evaluate.mini_swe_agent \
+python -m gskill.evaluate.mini_swe_agent \
   --config gepa_results/logs/run_xxx/config.json \
   --workers 16
 
 # Claude Code: baseline (no skills)
-python -m src.evaluate.claude_code \
+python -m gskill.evaluate.claude_code \
   --config gepa_results/logs/run_xxx/config.json \
   --model haiku --workers 4
 
 # Claude Code: with skills (copies best_skills.txt as CLAUDE.md)
-python -m src.evaluate.claude_code \
+python -m gskill.evaluate.claude_code \
   --config gepa_results/logs/run_xxx/config.json \
   --model haiku --workers 4 --use-skills
 
 # Claude Code: with proper Claude Code Skills (.claude/skills/<repo>/SKILL.md)
-python -m src.evaluate.claude_code_skills \
+python -m gskill.evaluate.claude_code_skills \
   --config gepa_results/logs/run_xxx/config.json \
   --model sonnet --workers 4 --use-skills
 ```
