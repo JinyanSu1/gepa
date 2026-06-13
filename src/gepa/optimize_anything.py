@@ -606,8 +606,8 @@ Based on your analysis, propose an improved version that:
     sections.append("""
 ## Output Format
 
-Provide ONLY the improved version within ``` blocks. The output must be a complete, 
-drop-in replacement for the current component (whether it's a prompt, configuration, 
+Provide ONLY the improved version within ``` blocks. The output must be a complete,
+drop-in replacement for the current component (whether it's a prompt, configuration,
 code, or any other parameter type).
 Do not include explanations, commentary, or markdown outside the ``` blocks.""")
 

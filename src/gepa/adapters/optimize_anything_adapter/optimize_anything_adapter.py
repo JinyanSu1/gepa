@@ -22,10 +22,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
 from gepa.core.adapter import DataInst, EvaluationBatch, GEPAAdapter
 from gepa.proposer.reflective_mutation.base import LanguageModel
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from gepa.optimize_anything import Candidate, OptimizationState, RefinerConfig, SideInfo
@@ -184,13 +184,19 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         example: Any,
     ) -> tuple[float, Any, dict]:
         """Call evaluator with optional caching."""
+        result, _ = self._call_evaluator_with_metric_count(candidate, example)
+        return result
+
+    def _call_evaluator_with_metric_count(
+        self,
+        candidate: "Candidate",
+        example: Any,
+    ) -> tuple[tuple[float, Any, dict], int]:
+        """Call evaluator and report whether it consumed a real metric call."""
         # No caching
         if self.cache_mode == "off":
-            return self.evaluator(
-                candidate,
-                example=example,
-                opt_state=self._build_opt_state(example),
-            )
+            result = self.evaluator(candidate, example=example, opt_state=self._build_opt_state(example))
+            return result, 1
 
         # Build cache key
         cache_key = self._cache_key(candidate, example)
@@ -198,7 +204,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         # Check cache (thread-safe)
         with self._eval_cache_lock:
             if cache_key in self._eval_cache:
-                return self._eval_cache[cache_key]
+                return self._eval_cache[cache_key], 0
 
         # Cache miss - call evaluator
         result = self.evaluator(
@@ -213,7 +219,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
             if self.cache_mode == "disk":
                 self._save_cache_entry(cache_key, result)
 
-        return result
+        return result, 1
 
     def evaluate(
         self,
@@ -232,9 +238,13 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         if self.refiner_config is None:
             # Old path: direct evaluation without refinement
             if self.parallel and len(batch) > 1:
-                raw_results = self._evaluate_parallel(batch, candidate)
+                raw_results, num_metric_calls = self._evaluate_parallel(batch, candidate)
             else:
-                raw_results = [self._call_evaluator(candidate, example) for example in batch]
+                raw_results_with_counts = [
+                    self._call_evaluator_with_metric_count(candidate, example) for example in batch
+                ]
+                raw_results = [result for result, _ in raw_results_with_counts]
+                num_metric_calls = sum(metric_calls for _, metric_calls in raw_results_with_counts)
             # Package outputs as (score, candidate, side_info) tuples
             eval_output = []
             for score, _, side_info in raw_results:
@@ -274,14 +284,17 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         # Count actual evaluator invocations.
         # Without refinement: 1 call per example. With refinement: count from
         # the attempt history already recorded in each side_info.
-        num_metric_calls = len(batch)
         if self.refiner_config is not None:
             num_metric_calls = 0
             for si in side_infos:
                 rp_info = si.get("refiner_prompt_specific_info", {})
                 attempts = rp_info.get("Attempts", [])
-                # Each attempt with "side_info" represents an actual evaluator call
-                num_metric_calls += sum(1 for a in attempts if "side_info" in a)
+                # New attempts include explicit metric-call accounting. Fall back
+                # for older payloads that only recorded evaluated attempts.
+                num_metric_calls += sum(
+                    a.get("metric_call_count", 1 if "side_info" in a else 0)
+                    for a in attempts
+                )
 
         return EvaluationBatch(
             outputs=outputs,
@@ -318,14 +331,16 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         refiner_prompt = candidate.get("refiner_prompt", "")
 
         # 1. Evaluate original candidate
-        original_score, original_output, original_side_info = self._call_evaluator(candidate, example)
+        (original_score, original_output, original_side_info), original_metric_calls = (
+            self._call_evaluator_with_metric_count(candidate, example)
+        )
 
         # Update best evals with original evaluation
         self._update_best_example_evals(example, original_score, original_side_info)
 
         # 2. Refine and evaluate
         best_refined_score, best_refined_candidate, best_refined_side_info, all_attempts = self._refine_and_evaluate(
-            candidate, example, refiner_prompt, original_score, original_side_info
+            candidate, example, refiner_prompt, original_score, original_side_info, original_metric_calls
         )
 
         # 3. Score = best of original and refined (refiner is a score booster)
@@ -386,7 +401,20 @@ class OptimizeAnythingAdapter(GEPAAdapter):
 
     def _evaluate_parallel(self, batch, candidate):
         """Evaluate batch in parallel (no refinement)."""
-        return self._run_parallel(batch, candidate, self._call_evaluator)
+        results: list[tuple[int, tuple[float, Any, SideInfo], int]] = []
+
+        with ThreadPoolExecutor(max_workers=self.max_workers or len(batch)) as executor:
+            future_to_idx = {
+                executor.submit(self._call_evaluator_with_metric_count, candidate, example): idx
+                for idx, example in enumerate(batch)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                result, metric_calls = future.result()
+                results.append((idx, result, metric_calls))
+
+        results.sort(key=lambda x: x[0])
+        return [result for _, result, _ in results], sum(metric_calls for _, _, metric_calls in results)
 
     def _evaluate_with_refinement_parallel(self, batch, candidate):
         """Evaluate batch in parallel with refinement."""
@@ -399,6 +427,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         refiner_prompt: str,
         original_score: float,
         original_side_info: "SideInfo",
+        original_metric_calls: int,
     ) -> tuple[float, dict[str, str] | None, "SideInfo | None", list[dict]]:
         """
         Refine a candidate using the refiner LLM and evaluate the refined version.
@@ -427,6 +456,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
                 "candidate": params_dict,
                 "score": original_score,
                 "side_info": original_side_info,
+                "metric_call_count": original_metric_calls,
             }
         ]
 
@@ -473,8 +503,8 @@ class OptimizeAnythingAdapter(GEPAAdapter):
 
                 # Reconstruct full candidate: refined params + original refiner_prompt
                 refined_candidate_dict = {**parsed_refined, "refiner_prompt": candidate.get("refiner_prompt", "")}
-                refined_score, refined_output, refined_eval_side_info = self._call_evaluator(
-                    refined_candidate_dict, example
+                (refined_score, refined_output, refined_eval_side_info), refined_metric_calls = (
+                    self._call_evaluator_with_metric_count(refined_candidate_dict, example)
                 )
 
                 # Update best evals with this refinement evaluation
@@ -487,6 +517,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
                         "candidate": parsed_refined,
                         "score": refined_score,
                         "side_info": refined_eval_side_info,
+                        "metric_call_count": refined_metric_calls,
                     }
                 )
 
@@ -539,7 +570,7 @@ class OptimizeAnythingAdapter(GEPAAdapter):
         ret: dict[str, list[dict[str, Any]]] = {}
         for component_name in components_to_update:
             ret[component_name] = []
-            for score, side_info in zip(scores, side_infos, strict=False):
+            for _score, side_info in zip(scores, side_infos, strict=False):
                 ret[component_name].append({})
                 for k, v in side_info.items():
                     if k == "scores":

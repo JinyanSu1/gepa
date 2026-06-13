@@ -62,26 +62,6 @@ def candidate_tree_dot_from_data(
 
     for idx in range(n):
         score = val_scores[idx]
-        candidate = candidates[idx]
-        pars = parents[idx]
-
-        # Tooltip
-        tooltip_parts = [f"Candidate {idx}"]
-        tooltip_parts.append(f"Val Score: {score:.4f}")
-        parent_str = ", ".join(str(p) for p in pars if p is not None) or "seed"
-        tooltip_parts.append(f"Parent(s): {parent_str}")
-        if idx == best_idx:
-            tooltip_parts.append("Role: BEST")
-        elif idx in dominator_ids:
-            tooltip_parts.append("Role: Pareto Front")
-        elif idx == 0:
-            tooltip_parts.append("Role: Seed")
-        tooltip_parts.append("")
-        for comp_name, comp_text in sorted(candidate.items()):
-            tooltip_parts.append(f"--- {comp_name} ---")
-            tooltip_parts.append(comp_text)
-
-        tooltip = _escape("\n".join(tooltip_parts))
         label = f"{idx}\\n({score:.2f})"
 
         if idx == best_idx:
