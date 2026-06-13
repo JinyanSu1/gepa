@@ -74,10 +74,32 @@ python -m gepa.gskill.train_optimize_anything \
 | `--workers` | 6 | Parallel Docker containers |
 | `--max-metric-calls` | 600 | Total rollout budget |
 | `--proposer` | `batch` | `batch` or `loop` (one-at-a-time then merge) |
+| `--reflection-record-mode` | `summary` | Reflection payload mode: `summary`, `hybrid`, or `full` |
 | `--run-testset` | off | Evaluate before AND after optimization |
 | `--resume` | None | Resume from previous run directory |
 | `--smoke-test` | off | Quick validation with 3 tasks |
 | `--wandb` | off | Enable Weights & Biases tracking |
+
+### Reflection Record Distillation
+
+By default, gskill sends compact rollout diagnostics to GEPA's reflection model
+instead of the full raw agent transcript. Each reflection record includes:
+
+- failure mode (`no_patch`, `test_failure`, `regression`, `patch_apply_failed`, etc.)
+- changed files and patch line counts
+- recent shell commands extracted from the agent trace
+- high-signal test failure lines
+- step, token, trace-size, and test-output-size metadata
+
+Use `--reflection-record-mode full` to preserve the previous raw-trace behavior
+for ablations, or `--reflection-record-mode hybrid` to include diagnostics plus
+a bounded trace excerpt. The deterministic fixture in
+`tests/test_gskill_trace_distillation.py` verifies that `summary` mode preserves
+the changed file, command, failure-mode, and pytest-failure signal while cutting
+the reflection payload to less than 35% of the full record. On the deterministic
+test fixture, the serialized reflection record drops from 14,254 chars (`full`)
+to 5,018 chars (`hybrid`) or 4,034 chars (`summary`), a 71.7% reduction for the
+default summary mode.
 
 ### Evaluation
 
