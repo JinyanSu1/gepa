@@ -6,6 +6,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -18,15 +19,13 @@ logging.getLogger("litellm").setLevel(logging.WARNING)
 # Load environment variables
 load_dotenv()
 
-import re
-
 from datasets import load_dataset
-from gskill.cost_tracker import reset_tracker
-from gskill.experiment_logger import ExperimentLogger, set_logger
-from gskill.swe_fitness_fn import create_swe_fitness_fn
 
 from gepa.optimize_anything import EngineConfig, GEPAConfig, ReflectionConfig, TrackingConfig, optimize_anything
 from gepa.utils.stop_condition import TimeoutStopCondition
+from gskill.cost_tracker import reset_tracker
+from gskill.experiment_logger import ExperimentLogger, set_logger
+from gskill.swe_fitness_fn import create_swe_fitness_fn
 
 
 class TeeOutput:
@@ -493,6 +492,17 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
     parser.add_argument("--workers", type=int, default=6, help="Number of parallel workers (Docker containers)")
     parser.add_argument("--max-metric-calls", type=int, default=600, help="Max rollouts for GEPA (controls budget)")
+    parser.add_argument(
+        "--reflection-record-mode",
+        type=str,
+        default="summary",
+        choices=["summary", "hybrid", "full"],
+        help=(
+            "How much rollout context to send to the reflection model: "
+            "'summary' for compact diagnostics, 'hybrid' for diagnostics plus trace excerpt, "
+            "or 'full' for raw agent traces."
+        ),
+    )
     parser.add_argument("--wandb", action="store_true", help="Enable wandb tracking")
     parser.add_argument("--wandb-project", type=str, default="gepa-swesmith", help="Wandb project name")
     parser.add_argument(
@@ -575,6 +585,7 @@ def main():
     print(f"Model: {args.model}")
     print(f"Reflection Model: {args.reflection_model}")
     print(f"Proposer: {args.proposer}")
+    print(f"Reflection Record Mode: {args.reflection_record_mode}")
     print(f"Workers: {args.workers} (Docker containers)")
     print(f"Run directory: {run_dir}")
     if resumed_from:
@@ -610,6 +621,7 @@ def main():
             "run_pre_optimization_testset": args.run_pre_optimization_testset,
             "run_post_optimization_testset": args.run_post_optimization_testset,
             "execution_mode": "docker",
+            "reflection_record_mode": args.reflection_record_mode,
             "wandb": args.wandb,
             "wandb_project": args.wandb_project if args.wandb else None,
             "proposer": args.proposer,
@@ -618,7 +630,11 @@ def main():
 
     # 2. Create Fitness Function
     print(f"\nCreating fitness function with {args.workers} workers...")
-    fitness_fn = create_swe_fitness_fn(model_name=args.model, n_workers=args.workers)
+    fitness_fn = create_swe_fitness_fn(
+        model_name=args.model,
+        n_workers=args.workers,
+        reflection_record_mode=args.reflection_record_mode,
+    )
     logger.info(f"Model: {args.model}")
     logger.info("Execution: Docker containers via SWE-smith")
 
@@ -694,7 +710,10 @@ def main():
         original_config_path = Path(__file__).parent / "mini_swe_agent_config" / "original_mini.yaml"
         print(f"\nEvaluating original mini-swe-agent config: {original_config_path}")
         original_fitness_fn = create_swe_fitness_fn(
-            model_name=args.model, n_workers=args.workers, config_path=str(original_config_path)
+            model_name=args.model,
+            n_workers=args.workers,
+            config_path=str(original_config_path),
+            reflection_record_mode=args.reflection_record_mode,
         )
         original_config_results = evaluate_on_test(
             original_fitness_fn, {"skills": ""}, test_data, name="Original mini-swe-agent"

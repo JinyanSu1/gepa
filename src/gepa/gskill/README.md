@@ -74,10 +74,69 @@ python -m gepa.gskill.train_optimize_anything \
 | `--workers` | 6 | Parallel Docker containers |
 | `--max-metric-calls` | 600 | Total rollout budget |
 | `--proposer` | `batch` | `batch` or `loop` (one-at-a-time then merge) |
+| `--reflection-record-mode` | `summary` | Reflection payload mode: `summary`, `hybrid`, or `full` |
 | `--run-testset` | off | Evaluate before AND after optimization |
 | `--resume` | None | Resume from previous run directory |
 | `--smoke-test` | off | Quick validation with 3 tasks |
 | `--wandb` | off | Enable Weights & Biases tracking |
+
+### Reflection Record Distillation
+
+By default, gskill sends compact rollout diagnostics to GEPA's reflection model
+instead of the full raw agent transcript. Each reflection record includes:
+
+- failure mode (`no_patch`, `test_failure`, `regression`, `patch_apply_failed`, etc.)
+- changed files and patch line counts
+- recent shell commands extracted from the agent trace
+- high-signal test failure lines
+- step, token, trace-size, and test-output-size metadata
+
+Use `--reflection-record-mode full` to preserve the previous raw-trace behavior
+for ablations, or `--reflection-record-mode hybrid` to include diagnostics plus
+a bounded trace excerpt. The deterministic fixture in
+`tests/test_gskill_trace_distillation.py` verifies that `summary` mode preserves
+the changed file, command, failure-mode, and pytest-failure signal while cutting
+the reflection payload to less than 35% of the full record. On the deterministic
+test fixture, the serialized reflection record drops from 14,254 chars (`full`)
+to 5,018 chars (`hybrid`) or 4,034 chars (`summary`), a 71.7% reduction for the
+default summary mode.
+
+### No-Docker Reflection Benchmark
+
+You can benchmark the distiller without Docker, SWE-smith images, or model API
+calls:
+
+```bash
+python -m gepa.gskill.gskill.trace_benchmark
+```
+
+The built-in replay cases cover four common rollout outcomes:
+`test_failure`, `patch_apply_failed`, `regression`, and `no_patch`. The benchmark
+checks whether `summary` mode preserves the expected failure mode, changed files,
+recent commands, and test-failure terms while measuring serialized reflection
+payload size.
+
+Latest deterministic result:
+
+| Mode | Avg serialized chars | Reduction vs full |
+|------|---------------------:|------------------:|
+| `full` | 12,918 | 0.0% |
+| `hybrid` | 3,662 | 71.9% |
+| `summary` | 2,599 | 80.6% |
+
+Using a simple chars/4 token estimate, `summary` mode reduces the average
+reflection input from 3,230 tokens to 650 tokens. At the default
+`--max-metric-calls 600` budget, that projects to roughly 1,547,850 fewer
+reflection input tokens than `full` mode. `summary` mode preserved 100.0% of
+the expected debugging signals across the four replay cases (16/16 checks).
+
+To replay your own saved artifacts, write one JSON object per line with
+`instance_id`, `problem`, `patch`, `agent_trace`, `test_output`, `status`,
+`score`, `agent_metrics`, and an `expected` object:
+
+```bash
+python -m gepa.gskill.gskill.trace_benchmark --input traces.jsonl --json
+```
 
 ### Evaluation
 

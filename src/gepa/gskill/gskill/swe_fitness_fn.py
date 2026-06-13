@@ -10,19 +10,30 @@ import threading
 from typing import Any
 
 from gskill.swe_harness import SWEHarness
+from gskill.trace_distillation import DistillationConfig, build_reflection_side_info
 
 
-def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, config_path: str | None = None):
+def create_swe_fitness_fn(
+    model_name: str = "gpt-5-mini",
+    n_workers: int = 6,
+    config_path: str | None = None,
+    reflection_record_mode: str = "summary",
+):
     """Create a fitness function for SWE tasks with Docker containers.
 
     Args:
         model_name: LiteLLM model name
         n_workers: Number of parallel workers
         config_path: Optional custom config path for the agent (defaults to mini.yaml)
+        reflection_record_mode: Controls how much raw trace is sent to GEPA reflection.
+            ``summary`` sends compact diagnostics, ``hybrid`` adds a trace excerpt,
+            and ``full`` preserves the previous raw-trace behavior.
 
     Returns:
         fitness_fn: Function that evaluates candidates on batches
     """
+
+    distillation_config = DistillationConfig(mode=reflection_record_mode)
 
     # Create harness pool - one per worker
     harness_pool = [SWEHarness() for _ in range(n_workers)]
@@ -115,26 +126,17 @@ def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, co
                 "estimated_tokens": agent_metrics.get("estimated_tokens", 0),
             }
 
-            # Side info for reflection
-            side_info = {
-                "Input": {
-                    "Task ID": instance_id,
-                    "Problem": problem[:200] + "..." if len(problem) > 200 else problem,
-                },
-                "Generated Outputs": {
-                    "Patch": patch[:500] + "..." if len(patch) > 500 else patch,
-                    "Agent Trace": agent_trace,
-                },
-                "Feedback": {
-                    "Status": feedback_msg,
-                    "Test Output": test_output[:500] + "..." + test_output[-500:]
-                    if len(test_output) > 1000
-                    else test_output,
-                },
-                "scores": {
-                    "correctness": score,
-                },
-            }
+            side_info = build_reflection_side_info(
+                task=task,
+                problem=problem,
+                patch=patch,
+                agent_trace=agent_trace,
+                agent_metrics=agent_metrics,
+                status=feedback_msg,
+                test_output=test_output,
+                score=score,
+                config=distillation_config,
+            )
 
             status = "✓ PASS" if passed else f"✗ FAIL ({feedback_msg})"
             print(f"  [{instance_id}] {status} [steps: {agent_metrics.get('steps', 0)}]", flush=True)
@@ -161,23 +163,17 @@ def create_swe_fitness_fn(model_name: str = "gpt-5-mini", n_workers: int = 6, co
 
             # Return failure with error info
             output = {"patch": "", "success": False, "steps": 0, "estimated_tokens": 0, "error": error_msg}
-            side_info = {
-                "Input": {
-                    "Task ID": instance_id,
-                    "Problem": task.get("problem_statement", "")[:200],
-                },
-                "Generated Outputs": {
-                    "Patch": "",
-                    "Agent Trace": "",
-                },
-                "Feedback": {
-                    "Status": "setup_error",
-                    "Test Output": f"Setup failed: {error_msg}",
-                },
-                "scores": {
-                    "correctness": 0.0,
-                },
-            }
+            side_info = build_reflection_side_info(
+                task=task,
+                problem=task.get("problem_statement", ""),
+                patch="",
+                agent_trace="",
+                agent_metrics={"steps": 0, "estimated_tokens": 0, "num_messages": 0},
+                status="setup_error",
+                test_output=f"Setup failed: {error_msg}",
+                score=0.0,
+                config=distillation_config,
+            )
 
             try:
                 harness.cleanup()
